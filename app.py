@@ -61,16 +61,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 .bubble { max-width: 75%; padding: 10px 14px; border-radius: 18px; font-size: 14px; line-height: 1.5; }
 .msg.user .bubble { background: #7B61FF; color: white; border-bottom-right-radius: 4px; }
 .msg.bot .bubble { background: #f0f0f0; color: #333; border-bottom-left-radius: 4px; }
+.msg.error .bubble { background: #fff0f0; color: #e53935; border-bottom-left-radius: 4px; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
 .bottom { border-top: 1px solid #eee; padding: 10px 12px; background: white; }
 .quick-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.quick-btn { background: #f3f0ff; border: 1px solid #7B61FF; color: #7B61FF; border-radius: 16px; padding: 5px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }
-.quick-btn:hover { background: #7B61FF; color: white; }
+.quick-btn { background: #f3f0ff; border: 1px solid #7B61FF; color: #7B61FF; border-radius: 16px; padding: 5px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; transition: all 0.2s; }
+.quick-btn:hover:not(:disabled) { background: #7B61FF; color: white; }
+.quick-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .input-row { display: flex; gap: 8px; }
 .input-row input { flex: 1; border: 1px solid #ddd; border-radius: 24px; padding: 10px 16px; font-size: 14px; outline: none; }
 .input-row input:focus { border-color: #7B61FF; }
-.input-row button { background: #7B61FF; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; font-size: 18px; cursor: pointer; flex-shrink: 0; }
-.input-row button:hover { background: #6a50ee; }
+.send-btn { background: #7B61FF; color: white; border: none; border-radius: 50%; width: 40px; height: 40px; font-size: 18px; cursor: pointer; flex-shrink: 0; transition: all 0.2s; }
+.send-btn:hover:not(:disabled) { background: #6a50ee; }
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -83,7 +86,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div class="welcome">👋 你好！欢迎来到宠物造型店，请问有什么可以帮您？</div>
   </div>
   <div class="bottom">
-    <div class="quick-btns">
+    <div class="quick-btns" id="quickBtns">
       <button class="quick-btn" onclick="sendMsg('你们提供哪些服务')">🐶 服务项目</button>
       <button class="quick-btn" onclick="sendMsg('价格是多少')">💰 收费价格</button>
       <button class="quick-btn" onclick="sendMsg('我想预约')">📅 立即预约</button>
@@ -92,15 +95,24 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
       <button class="quick-btn" onclick="sendMsg('取消预约怎么退款')">🔄 取消预约</button>
     </div>
     <div class="input-row">
-      <input type="text" id="userInput" placeholder="请输入您的问题..." onkeydown="if(event.key==='Enter')sendMsg()"/>
-      <button onclick="sendMsg()">➤</button>
+      <input type="text" id="userInput" placeholder="请输入您的问题..." onkeydown="if(event.key==='Enter' && !sending)sendMsg()"/>
+      <button class="send-btn" id="sendBtn" onclick="sendMsg()">➤</button>
     </div>
   </div>
 </div>
 <script>
 let history = [];
+let sending = false;
+
+function setLoading(on) {
+  sending = on;
+  document.getElementById("sendBtn").disabled = on;
+  document.getElementById("userInput").disabled = on;
+  document.querySelectorAll(".quick-btn").forEach(b => b.disabled = on);
+}
 
 async function sendMsg(text) {
+  if (sending) return;
   const input = document.getElementById("userInput");
   const msg = text || input.value.trim();
   if (!msg) return;
@@ -108,26 +120,39 @@ async function sendMsg(text) {
 
   appendMsg("user", msg);
   history.push({role: "user", content: msg});
+  setLoading(true);
 
   const typing = appendTyping();
 
-  const res = await fetch("/chat", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({messages: history})
-  });
-  const data = await res.json();
-  typing.remove();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
 
-  const reply = data.reply;
-  appendMsg("bot", reply);
-  history.push({role: "assistant", content: reply});
+  try {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({messages: history}),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    const data = await res.json();
+    typing.remove();
+    appendMsg("bot", data.reply);
+    history.push({role: "assistant", content: data.reply});
+  } catch (e) {
+    clearTimeout(timeout);
+    typing.remove();
+    appendMsg("error", "网络超时，请重新发送～");
+    history.pop();
+  } finally {
+    setLoading(false);
+  }
 }
 
 function appendMsg(role, text) {
   const box = document.getElementById("messages");
   const div = document.createElement("div");
-  div.className = "msg " + role;
+  div.className = "msg " + (role === "user" ? "user" : role === "error" ? "bot error" : "bot");
   div.innerHTML = `
     <div class="avatar">${role === "user" ? "👤" : "🐾"}</div>
     <div class="bubble">${text}</div>
@@ -172,11 +197,11 @@ def chat():
                 "max_tokens": 500,
                 "temperature": 0.4
             },
-            timeout=30
+            timeout=12
         )
         reply = response.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        reply = "出错了，请稍后再试。"
+        reply = "网络超时，请重新发送～"
     return jsonify({"reply": reply})
 
 if __name__ == "__main__":
